@@ -1,0 +1,39 @@
+
+" set tab width to 2 spaces "
+set tabstop=2
+set shiftwidth=2
+set expandtab
+
+" Use desert color scheme "
+colorscheme desert 
+
+" Highlight search
+set hlsearch
+
+set number
+
+set showcmd
+set ruler
+
+set laststatus=2
+set statusline=%f\ %m%=%l,%c\ %P
+
+set autoindent
+
+syntax enable 
+
+" exit after pressing jk"
+inoremap jk <Esc>
+
+"  Restore cursor position when reopening files
+augroup restore_cursor
+  autocmd!
+  autocmd BufReadPost *
+    \ if line("'\"") > 0 && line("'\"") <= line("$") | exe "normal! g`\"" | endif
+augroup END
+
+" transparency "
+set nocompatible
+set background=dark
+highlight Normal cterm=none ctermbg=NONE
+highlight NonText cterm=none ctermbg=NONE 
