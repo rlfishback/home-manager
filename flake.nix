@@ -33,7 +33,7 @@
           };
           overlays = lib.optionals (system == "aarch64-linux") [
             jetpack-nixos.overlays.default
-            (final: _prev: { inherit (final.nvidia-jetpack) cudaPackages; })
+            (final: _prev: { inherit (final.nvidia-jetpack6) cudaPackages; })
           ];
         };
 
@@ -47,7 +47,16 @@
         system:
         let
           pkgs = mkPkgs system;
-          python = pkgs.python311;
+          python = pkgs.python311.override {
+            packageOverrides = _: prev: {
+              # Allow torch to build on machines without big-parallel
+              # (e.g. Orin Nano 8GB) and limit parallelism to avoid OOM.
+              torch = prev.torch.overrideAttrs {
+                requiredSystemFeatures = [ ];
+                NIX_BUILD_CORES = 2;
+              };
+            };
+          };
           pp = python.pkgs;
 
           # --- packages missing from nixpkgs ---
@@ -273,8 +282,8 @@
         system:
         let
           pkgs = mkPkgs system;
-          python = pkgs.python311;
           chatterbox = self.packages.${system}.chatterbox-tts;
+          python = chatterbox.pythonModule;
         in
         {
           default = pkgs.mkShell {
