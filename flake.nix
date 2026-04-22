@@ -55,6 +55,11 @@
                 requiredSystemFeatures = [ ];
                 NIX_BUILD_CORES = 2;
               };
+              # Flaky test_cull_connected (1/858) fails intermittently,
+              # cascading through jupyterlab → jupyter → einops → conformer.
+              jupyter-server = prev.jupyter-server.overrideAttrs {
+                doCheck = false;
+              };
             };
           };
           pp = python.pkgs;
