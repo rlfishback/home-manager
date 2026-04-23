@@ -49,14 +49,27 @@
           pkgs = mkPkgs system;
           python = pkgs.python311.override {
             packageOverrides = _: prev: {
-              # Allow torch to build on machines without big-parallel
-              # (e.g. Orin Nano 8GB) and limit parallelism to avoid OOM.
-              torch = prev.torch.overrideAttrs {
+              # Disable triton: it's only used by `torch.compile`, which
+              # chatterbox never calls. Dropping it avoids a multi-hour
+              # LLVM+triton build on aarch64.
+              torch = (prev.torch.override { tritonSupport = false; }).overrideAttrs {
                 requiredSystemFeatures = [ ];
                 NIX_BUILD_CORES = 2;
               };
-              # used for tests not runtime
+              # einops pulls in jupyter only for tests, not runtime.
+              # Skip its tests to drop the entire jupyter dependency tree
+              # (jupyter-server, jupyterlab, django, etc.) from the build.
               einops = prev.einops.overrideAttrs {
+                doCheck = false;
+              };
+              # pydevd's test_utilities suite spawns Python subprocesses that
+              # require ptrace/tracing behavior that Nix's build sandbox
+              # doesn't allow, causing 3 tests to fail. pydevd is pulled in
+              # as a test-only dep of omegaconf, so those failures cascade
+              # and block omegaconf from building. Skipping pydevd's own
+              # tests lets it build, and omegaconf (which doesn't actually
+              # use pydevd at runtime) builds normally.
+              pydevd = prev.pydevd.overrideAttrs {
                 doCheck = false;
               };
             };
@@ -121,107 +134,6 @@
             pythonImportsCheck = [ "s3tokenizer" ];
           };
 
-          pyrubberband = pp.buildPythonPackage rec {
-            pname = "pyrubberband";
-            version = "0.4.0";
-            pyproject = true;
-            src = pp.fetchPypi {
-              inherit pname version;
-              hash = "sha256-dHB+yMpsYjToStLZpKpcCKYvz9g9oBHVNdQfQ4isSfc=";
-            };
-            build-system = [ pp.setuptools ];
-            dependencies = [
-              pp.numpy
-              pp.scipy
-              pp.soundfile
-            ];
-            propagatedBuildInputs = [ pkgs.rubberband ];
-            doCheck = false;
-            pythonImportsCheck = [ "pyrubberband" ];
-          };
-
-          sox-python = pp.buildPythonPackage rec {
-            pname = "sox";
-            version = "1.5.0";
-            pyproject = true;
-            src = pp.fetchPypi {
-              inherit pname version;
-              hash = "sha256-Ese+W7H1SNiR/hHoLAjPXxoddOIlKY9gCC5a6yRpraA=";
-            };
-            build-system = [ pp.setuptools ];
-            dependencies = [
-              pp.numpy
-              pp.typing-extensions
-            ];
-            propagatedBuildInputs = [ pkgs.sox ];
-            doCheck = false;
-            pythonImportsCheck = [ "sox" ];
-          };
-
-          # nixpkgs omegaconf fails on remote builders (pydevd test failure cascade),
-          # so we build from PyPI source and regenerate ANTLR grammars with nixpkgs antlr4.
-          omegaconf = pp.buildPythonPackage rec {
-            pname = "omegaconf";
-            version = "2.3.0";
-            pyproject = true;
-            src = pp.fetchPypi {
-              inherit pname version;
-              hash = "sha256-1dS20plVzFCtUMRtwmm82SxuAPX5DSOrX+57/KS6TMc=";
-            };
-            build-system = [ pp.setuptools ];
-            nativeBuildInputs = [ pkgs.jre_minimal ];
-            postPatch = ''
-              substituteInPlace requirements/base.txt \
-                --replace-fail "antlr4-python3-runtime==4.9.*" "antlr4-python3-runtime"
-              substituteInPlace build_helpers/build_helpers.py \
-                --replace-fail \
-                  'str(build_dir / "bin" / "antlr-4.9.3-complete.jar")' \
-                  '"${pkgs.antlr4.out}/share/java/antlr-${pkgs.antlr4.version}-complete.jar"'
-            '';
-            dependencies = [
-              pp.antlr4-python3-runtime
-              pp.pyyaml
-            ];
-            doCheck = false;
-            pythonImportsCheck = [ "omegaconf" ];
-          };
-
-          resemble-perth = pp.buildPythonPackage {
-            pname = "resemble-perth";
-            version = "1.0.1-unstable-2025-06-20";
-            src = pkgs.fetchFromGitHub {
-              owner = "resemble-ai";
-              repo = "Perth";
-              rev = "ce86c49d029f42272c1902eccb675556b9ed2330";
-              hash = "sha256-sVsuzdguQyWYHl1QgpkbqpQIlwM4GTRNcfudkt7ajb0=";
-            };
-            pyproject = true;
-            build-system = [ pp."uv-build" ];
-            dependencies = [
-              pp.bitstring
-              pp.librosa
-              pp.matplotlib
-              pp.numpy
-              pp.pandas
-              pp.parselmouth
-              pp.pillow
-              pp.pydub
-              pp.pywavelets
-              pp.pyyaml
-              pp."scikit-learn"
-              pp.soundfile
-              pp.tabulate
-              pp.tensorboard
-              pp.torch
-              pp.torchaudio
-              pp.tqdm
-              pyloudnorm
-              pyrubberband
-              sox-python
-            ];
-            doCheck = false;
-            # pythonImportsCheck triggers numba JIT caching which fails in sandbox
-          };
         in
         {
           default = self.packages.${system}.chatterbox-tts;
@@ -244,20 +156,36 @@
             ];
             pythonRemoveDeps = [
               "gradio" # only needed for demo web apps
+              "resemble-perth" # watermarking stubbed out below
             ];
+            # Replace `import perth` with a no-op watermarker shim in every
+            # file that uses it, so we don't need to build Perth or any of
+            # its deps (pydub, soundfile, pyrubberband, sox, librosa-extras,
+            # pandas, pillow, pywavelets, scikit-learn, tensorboard, etc.).
+            # All four call sites follow the same pattern:
+            #   self.watermarker = perth.PerthImplicitWatermarker()
+            #   watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
+            # Returning `wav` unchanged is a safe no-op since it's a numpy
+            # array fed back into `torch.from_numpy` immediately after.
             postPatch = ''
-              substituteInPlace pyproject.toml \
-                --replace-fail \
-                  'resemble-perth @ git+https://github.com/resemble-ai/Perth.git@master' \
-                  'resemble-perth'
+              for f in src/chatterbox/tts.py src/chatterbox/tts_turbo.py \
+                       src/chatterbox/vc.py src/chatterbox/mtl_tts.py; do
+                substituteInPlace "$f" --replace-fail \
+                  'import perth' \
+                  'class _NoopWatermarker:
+    def apply_watermark(self, wav, sample_rate=None): return wav
+class _PerthShim:
+    PerthImplicitWatermarker = _NoopWatermarker
+perth = _PerthShim()'
+              done
             '';
 
             dependencies = [
               conformer
-              omegaconf
               pp.diffusers
               pp.librosa
               pp.numpy
+              pp.omegaconf
               pp.pykakasi
               pp.safetensors
               pp."spacy-pkuseg"
@@ -265,7 +193,6 @@
               pp.torchaudio
               pp.transformers
               pyloudnorm
-              resemble-perth
               s3tokenizer
             ];
 
