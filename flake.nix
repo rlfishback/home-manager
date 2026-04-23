@@ -71,6 +71,8 @@
               # use pydevd at runtime) builds normally.
               pydevd = prev.pydevd.overrideAttrs {
                 doCheck = false;
+                doInstallCheck = false;
+                dontUsePytestCheck = true;
               };
             };
           };
