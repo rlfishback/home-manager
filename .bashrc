@@ -15,5 +15,9 @@ export HISTFILESIZE=100000
 # This ensures that history is kept up-to-date across multiple sessions,
 # including potentially isolated Nix shells.
 # $PROMPT_COMMAND is preserved to avoid interfering with other configurations.
-export PROMPT_COMMAND="history -a; history -c; history -r; ${PROMPT_COMMAND}"
+case ";${PROMPT_COMMAND};" in
+  *";history -a;"*) ;;
+  *) export PROMPT_COMMAND="history -a; ${PROMPT_COMMAND}" ;;
+esac
+
 
